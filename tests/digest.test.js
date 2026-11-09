@@ -133,6 +133,33 @@ describe('GET /current-affairs/digest/today', () => {
   });
 });
 
+// A query that fails like PostgREST does when a table/function is missing.
+function failingQuery(code, message) {
+  const q = {};
+  for (const m of ['select', 'eq', 'in', 'lte', 'gte', 'order', 'limit', 'maybeSingle']) q[m] = () => q;
+  q.then = (resolve) => resolve({ data: null, error: { code, message } });
+  return q;
+}
+
+describe('when the database is not set up', () => {
+  test.each(['PGRST205', '42P01'])('a missing table (%s) answers 503 "not ready yet", not a generic 500', async (code) => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(supabase, 'from').mockReturnValueOnce(failingQuery(code, "Could not find the table 'public.ca_stories'"));
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: 'Current Affairs is not ready yet. Please check back soon.', reason: 'database tables missing' });
+    error.mockRestore();
+  });
+
+  test('other database errors stay a 500', async () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(supabase, 'from').mockReturnValueOnce(failingQuery('57014', 'statement timeout'));
+    const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    expect(res.status).toBe(500);
+    error.mockRestore();
+  });
+});
+
 describe('GET /current-affairs/digest/list', () => {
   test('lists published dates newest first with story counts, up to the limit', async () => {
     seedStories(3, { publish_date: '2026-11-09' });

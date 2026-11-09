@@ -1,5 +1,6 @@
 const { normalizeAgeGroup } = require('../services/content');
 const { normalizeEmail } = require('../middleware/auth');
+const { isNotSetUp } = require('../services/db');
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -30,7 +31,14 @@ const handle = (fn) => async (req, res) => {
   try {
     await fn(req, res);
   } catch (err) {
-    console.error(`[current-affairs] ${req.method} ${req.originalUrl}:`, err.message);
+    console.error(`[current-affairs] ${req.method} ${req.originalUrl}:`, err.code || '', err.message);
+    if (isNotSetUp(err)) {
+      // schema.sql has not been run on this Supabase project (see SETUP.md).
+      return res.status(503).json({
+        error: 'Current Affairs is not ready yet. Please check back soon.',
+        reason: 'database tables missing',
+      });
+    }
     res.status(500).json({ error: 'Could not load current affairs right now. Please try again.' });
   }
 };
