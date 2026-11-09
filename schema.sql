@@ -429,3 +429,6 @@ insert into ca_quiz_questions (
  'Counting people and services like this is part of how countries make plans and budgets.',
  null, 'published', 10)
 on conflict (id) do nothing;
+
+-- Tell the Supabase API (PostgREST) about the new tables and function right away.
+notify pgrst, 'reload schema';
