@@ -8,8 +8,9 @@
 //   4. Write     — LLM (Groq) writes the under-8 / 8-12 / 13+ versions
 //   5. Check     — structure + word counts, and numbers/names against the source;
 //                  problems become review notes for the editor
-//   6. Save      — insert into ca_stories with status 'review'. NEVER publishes:
-//                  an editor sets status = 'published' (see SETUP.md).
+//   6. Save      — insert into ca_stories. A story with no fact-check problems is
+//                  published (without its unchecked "did you know"); the rest wait
+//                  for an editor in the admin content tool (scripts/lib/autoPublish.js).
 //
 // Usage:
 //   node scripts/generate-digest.js [--dry-run] [--date=YYYY-MM-DD] [--max=25] [--per-category=4]
@@ -20,6 +21,7 @@ const { SOURCES, enabledSources } = require('./lib/sources');
 const { parseFeed, hostAllowed, urlHash, dedupe, classify, unsuitableReason, rank } = require('./lib/feeds');
 const { storyPrompt, validateStory, verifyAgainstSource, toStoryRow } = require('./lib/writer');
 const { completeJSON } = require('./lib/llm');
+const { storyDecision, applyStoryDecision } = require('./lib/autoPublish');
 const { createLogger } = require('./lib/log');
 const { localDate, isDateString } = require('../services/content');
 
@@ -127,7 +129,7 @@ async function runDigestPipeline({
   const chosen = selectForToday(candidates, { max, perCategory });
   log('selected', { message: `${chosen.length} of ${candidates.length} candidates`, links: chosen.map((c) => c.link) });
 
-  const summary = { date: publishDate, dryRun, candidates: candidates.length, saved: 0, skipped: 0, failed: 0, rows: [] };
+  const summary = { date: publishDate, dryRun, candidates: candidates.length, saved: 0, published: 0, skipped: 0, failed: 0, rows: [] };
   for (const item of chosen) {
     let generated;
     try {
@@ -150,11 +152,12 @@ async function runDigestPipeline({
       continue;
     }
     const allFlags = [...flags, ...verifyAgainstSource(data, item)];
-    const row = toStoryRow(data, item, { publishDate, flags: allFlags });
+    const decision = storyDecision(allFlags);
+    const row = applyStoryDecision(toStoryRow(data, item, { publishDate, flags: allFlags }), allFlags, decision, now);
     summary.rows.push(row);
 
     if (dryRun) {
-      log('dry_run_story', { link: item.link, model: generated.model, flags: allFlags, row });
+      log('dry_run_story', { link: item.link, model: generated.model, flags: allFlags, wouldPublish: decision.publish, row });
       continue;
     }
     const { error } = await supabase.from('ca_stories').insert(row);
@@ -165,10 +168,15 @@ async function runDigestPipeline({
       continue;
     }
     summary.saved++;
-    log('saved_for_review', { link: item.link, category: row.category, model: generated.model, flags: allFlags });
+    if (row.status === 'published') {
+      summary.published++;
+      log('published', { link: item.link, category: row.category, model: generated.model, flags: allFlags });
+    } else {
+      log('saved_for_review', { link: item.link, category: row.category, model: generated.model, flags: allFlags, heldFor: decision.reasons });
+    }
   }
 
-  log('done', { message: `saved ${summary.saved} for review, skipped ${summary.skipped}, failed ${summary.failed}` });
+  log('done', { message: `saved ${summary.saved} (${summary.published} published, ${summary.saved - summary.published} for review), skipped ${summary.skipped}, failed ${summary.failed}` });
   return summary;
 }
 
@@ -177,7 +185,7 @@ if (require.main === module) {
     const args = parseArgs(process.argv.slice(2));
     const supabase = args.dryRun ? null : require('../services/supabase');
     const summary = await runDigestPipeline({ ...args, supabase });
-    console.log(`\nDone: ${summary.saved} stories saved with status 'review'. Publish them after checking (SETUP.md → "Reviewing content").`);
+    console.log(`\nDone: ${summary.saved} stories saved, ${summary.published} published automatically; the rest wait for review in the admin content tool.`);
     process.exit(summary.failed && !summary.saved && !summary.dryRun ? 1 : 0);
   })().catch((e) => {
     console.error(`[generate-digest] ${e.message}`);

@@ -1,6 +1,7 @@
 // Content pipeline: feed parsing, credibility, de-dupe, classification, the
 // fact check, and end-to-end runs with fake feeds, a fake LLM and the
-// in-memory Supabase — everything saved must be status 'review'.
+// in-memory Supabase. Stories and quizzes with no fact-check problems are
+// published by themselves; anything else waits for an editor (status 'review').
 const { createFakeSupabase } = require('./helpers/fakeSupabase');
 const { parseFeed, hostAllowed, normalizeUrl, urlHash, dedupe, classify, unsuitableReason } = require('../scripts/lib/feeds');
 const { validateStory, verifyAgainstSource } = require('../scripts/lib/writer');
@@ -150,7 +151,10 @@ describe('runDigestPipeline', () => {
     ? { ok: true, text: async () => feeds[url] }
     : { ok: false, status: 404, text: async () => '' });
 
-  test("saves verified, de-duplicated stories with status 'review' only — never published", async () => {
+  afterEach(() => { delete process.env.CA_AUTO_PUBLISH; });
+
+  test("with auto-publish off, saves verified, de-duplicated stories with status 'review' only", async () => {
+    process.env.CA_AUTO_PUBLISH = 'off';
     const supabase = createFakeSupabase();
     supabase.__seed('ca_stories', [storyRow({ source_url_hash: urlHash('https://www.nasa.gov/news/saved') })]);
     const llm = jest.fn(async () => ({ model: 'fake', data: GOOD_STORY }));
@@ -178,6 +182,39 @@ describe('runDigestPipeline', () => {
       'deduplicated:already in ca_stories',
     ]));
     expect(logger.entries.filter((e) => e.action === 'saved_for_review')).toHaveLength(2);
+  });
+
+  test('a story with no fact-check problems is published without its unchecked "did you know"; one with problems waits', async () => {
+    const clean = {
+      'https://pib.gov.in/rss': rss([{
+        title: 'ISRO launches weather satellite Meghdoot',
+        link: 'https://pib.gov.in/PressRelease?PRID=7',
+        description: 'ISRO launched the weather satellite Meghdoot on Monday from Sriharikota to help forecast rain and storms across the country this season.',
+      }]),
+      'https://www.nasa.gov/feed/': feeds['https://www.nasa.gov/feed/'],
+    };
+    const supabase = createFakeSupabase();
+    const logger = quietLogger();
+    const summary = await runDigestPipeline({
+      sources: [PIB, NASA], fetchImpl: async (url) => ({ ok: true, text: async () => clean[url] }),
+      supabase, llm: async () => ({ model: 'fake', data: GOOD_STORY }), now: NOW, logger,
+    });
+    expect(summary).toMatchObject({ saved: 3, published: 1 });
+
+    const pib = supabase.__rows('ca_stories').find((r) => r.source === 'PIB');
+    expect(pib).toMatchObject({ status: 'published', reviewed_by: 'auto', did_you_know: null, is_true_fact: false });
+    expect(Object.values(pib.age_extras).some((v) => v.didYouKnow)).toBe(false);
+    expect(pib.age_extras.kid.newWords).toHaveLength(2);
+    expect(pib.review_notes).toMatch(/Published automatically/);
+    expect(pib.review_notes).toContain('Aryabhata'); // kept for the editor to check and add back
+
+    // NASA's article never mentions ISRO or Meghdoot, and has little text: held.
+    for (const row of supabase.__rows('ca_stories').filter((r) => r.source === 'NASA')) {
+      expect(row.status).toBe('review');
+      expect(row.did_you_know).toBeTruthy();
+      expect(row.review_notes).toMatch(/names not in source/);
+    }
+    expect(logger.entries.filter((e) => e.action === 'published')).toHaveLength(1);
   });
 
   test('a dry run saves nothing; bad or skipped writer output is logged, not saved', async () => {
@@ -222,7 +259,9 @@ describe('runQuizPipeline', () => {
     })),
   });
 
-  test("writes 10 questions per age group from last week's published stories, status 'review'", async () => {
+  afterEach(() => { delete process.env.CA_AUTO_PUBLISH; });
+
+  test("writes 10 questions per age group from last week's published stories and publishes them", async () => {
     const supabase = createFakeSupabase();
     supabase.__seed('ca_stories', [...stories, storyRow({ status: 'review', publish_date: '2026-11-05' }), storyRow({ publish_date: '2026-10-20' })]);
     const llm = jest.fn(async (messages) => {
@@ -234,11 +273,26 @@ describe('runQuizPipeline', () => {
     expect(results.map((r) => r.saved)).toEqual([10, 10, 10]);
     const rows = supabase.__rows('ca_quiz_questions');
     expect(rows).toHaveLength(30);
-    expect(rows.every((r) => r.status === 'review' && r.week_start === '2026-11-08')).toBe(true);
+    expect(rows.every((r) => r.status === 'published' && r.reviewed_by === 'auto' && r.week_start === '2026-11-08')).toBe(true);
+    expect(results.every((r) => r.published)).toBe(true);
 
     // Re-running the same week does nothing without --force.
     const again = await runQuizPipeline({ supabase, llm, now: NOW, logger: quietLogger() });
     expect(again.results).toEqual([]);
+  });
+
+  test('a quiz citing a story from outside the week waits for an editor; so does everything with auto-publish off', async () => {
+    const supabase = createFakeSupabase();
+    supabase.__seed('ca_stories', stories);
+    const strayQuiz = () => { const q = goodQuiz(); q.questions[0].storyId = '00000000-0000-4000-8000-000000000000'; return q; };
+    await runQuizPipeline({ supabase, llm: async () => ({ model: 'fake', data: strayQuiz() }), ages: ['8-12'], now: NOW, logger: quietLogger() });
+    const held = supabase.__rows('ca_quiz_questions');
+    expect(held).toHaveLength(10);
+    expect(held.every((r) => r.status === 'review' && /storyId not in this week/.test(r.review_notes))).toBe(true);
+
+    process.env.CA_AUTO_PUBLISH = 'off';
+    await runQuizPipeline({ supabase, llm: async () => ({ model: 'fake', data: goodQuiz() }), ages: ['13+'], now: NOW, logger: quietLogger() });
+    expect(supabase.__rows('ca_quiz_questions').filter((r) => r.age_group === '13+').every((r) => r.status === 'review')).toBe(true);
   });
 
   test('rejects malformed sets and flags composition gaps', () => {

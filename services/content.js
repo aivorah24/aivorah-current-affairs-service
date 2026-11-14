@@ -2,9 +2,10 @@
 // Pure functions only — no database access — so they are easy to test.
 
 const AGE_GROUPS = {
-  'under-8': { column: 'young', storiesPerDay: 3, newWords: 1, wordsPerMinute: 90 },
-  '8-12':    { column: 'kid',   storiesPerDay: 10, newWords: 2, wordsPerMinute: 130 },
-  '13+':     { column: 'teen',  storiesPerDay: 18, newWords: 3, wordsPerMinute: 170 },
+  // Spec: 5-7 stories a day, about 5 minutes of reading.
+  'under-8': { column: 'young', storiesPerDay: 5, newWords: 1, wordsPerMinute: 90 },
+  '8-12':    { column: 'kid',   storiesPerDay: 6, newWords: 2, wordsPerMinute: 130 },
+  '13+':     { column: 'teen',  storiesPerDay: 7, newWords: 3, wordsPerMinute: 170 },
 };
 
 const CATEGORIES = ['india', 'world', 'economy', 'science', 'environment', 'sports', 'society'];

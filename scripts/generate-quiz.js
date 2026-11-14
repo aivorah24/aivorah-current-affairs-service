@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Weekly Quiz Generator (PRD §6.3). Run on Sunday: writes 10 questions per age
 // group from the stories PUBLISHED in the previous 7 days, into
-// ca_quiz_questions with status 'review'. Never publishes — an editor does.
+// ca_quiz_questions. A set that passes the checks is published; one with a
+// question tied to a story outside the week waits for an editor (scripts/lib/autoPublish.js).
 //
 // Composition: 2 each from India / World / Science / Economy+Environment /
 // Sports+Society; 6 mcq, 2 true_false, 2 reasoning. When a group has no
@@ -15,6 +16,7 @@ const { AGE_GROUPS, CATEGORIES, localDate, isDateString, addDays, quizWeekStart,
 const { CATEGORY_SLOTS, TYPE_QUOTA, QUIZ_SIZE } = require('../services/quiz');
 const { completeJSON } = require('./lib/llm');
 const { createLogger } = require('./lib/log');
+const { quizDecision, applyQuizDecision } = require('./lib/autoPublish');
 
 function parseArgs(argv) {
   const args = { dryRun: false, week: null, ages: Object.keys(AGE_GROUPS), force: false };
@@ -141,7 +143,8 @@ async function runQuizPipeline({ week, ages = Object.keys(AGE_GROUPS), dryRun = 
         const { data, model } = await llm(quizPrompt(stories, ageGroup));
         const { errors, flags } = validateQuiz(data, storyIds);
         if (errors.length) { log('invalid_output', { ageGroup, attempt, errors }); continue; }
-        accepted = { rows: toQuestionRows(data, { weekStart, ageGroup, storyIds }), flags, model };
+        const decision = quizDecision(flags);
+        accepted = { rows: applyQuizDecision(toQuestionRows(data, { weekStart, ageGroup, storyIds }), flags, decision, now), flags, model, decision };
       } catch (e) {
         log('generation_failed', { ageGroup, attempt, message: e.message });
       }
@@ -155,10 +158,11 @@ async function runQuizPipeline({ week, ages = Object.keys(AGE_GROUPS), dryRun = 
     }
     const { error: insErr } = await supabase.from('ca_quiz_questions').insert(accepted.rows);
     if (insErr) { log('save_failed', { ageGroup, message: insErr.message }); results.push({ ageGroup, saved: 0, failed: true }); continue; }
-    log('saved_for_review', { ageGroup, count: accepted.rows.length, model: accepted.model, flags: accepted.flags });
-    results.push({ ageGroup, saved: accepted.rows.length, flags: accepted.flags });
+    const published = accepted.decision.publish;
+    log(published ? 'published' : 'saved_for_review', { ageGroup, count: accepted.rows.length, model: accepted.model, flags: accepted.flags, heldFor: accepted.decision.reasons });
+    results.push({ ageGroup, saved: accepted.rows.length, published, flags: accepted.flags });
   }
-  log('done', { message: results.map((r) => `${r.ageGroup}: ${r.failed ? 'failed' : `${r.saved} saved`}`).join(', ') });
+  log('done', { message: results.map((r) => `${r.ageGroup}: ${r.failed ? 'failed' : `${r.saved} saved${r.published ? ' and published' : ' for review'}`}`).join(', ') });
   return { weekStart, results };
 }
 

@@ -1,5 +1,8 @@
 -- ============================================================================
 -- Aivorah Current Affairs — Supabase schema
+-- The source of truth is aivorah-db/supabase/migrations/0023_current_affairs.sql
+-- (applied with `npm run migrate:dev` / `migrate:test` there). This file is the
+-- same schema plus demo rows, for a quick local or sandbox setup.
 -- Run the whole file in the Supabase SQL editor. Safe to re-run: tables,
 -- indexes and seed rows are created only if missing; functions and policies
 -- are replaced.
@@ -94,6 +97,13 @@ create table if not exists ca_quiz_questions (
   created_at     timestamptz not null default now(),
   check (jsonb_typeof(options) = 'array' and correct_index < jsonb_array_length(options))
 );
+
+-- Admin content tool and auto-publish (also in migration 0023).
+alter table ca_stories add column if not exists reviewed_by text;
+alter table ca_stories add column if not exists reviewed_at timestamptz;
+alter table ca_quiz_questions add column if not exists review_notes text;
+alter table ca_quiz_questions add column if not exists reviewed_by text;
+alter table ca_quiz_questions add column if not exists reviewed_at timestamptz;
 
 create index if not exists ca_quiz_questions_week_idx
   on ca_quiz_questions (week_start, age_group) where status = 'published';

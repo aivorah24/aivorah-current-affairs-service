@@ -21,12 +21,12 @@ function seedStories(count, overrides = {}) {
 }
 
 describe('GET /current-affairs/digest/today', () => {
-  test('8-12 gets 10 stories, highest priority first, in the kid version with 2 new words', async () => {
+  test('8-12 gets 6 stories, highest priority first, in the kid version with 2 new words', async () => {
     seedStories(12);
     const res = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true, ageGroup: '8-12', target: 10, completed: false });
-    expect(res.body.stories).toHaveLength(10);
+    expect(res.body).toMatchObject({ date: '2026-11-09', isToday: true, ageGroup: '8-12', target: 6, completed: false });
+    expect(res.body.stories).toHaveLength(6);
     expect(res.body.stories[0].title).toBe('Kid title 12');
     expect(res.body.stories[0]).toMatchObject({
       summary: 'Kid summary', whatHappened: 'Something happened in detail.', category: 'india', source: 'ISRO', read: false,
@@ -38,11 +38,11 @@ describe('GET /current-affairs/digest/today', () => {
     expect(res.body.stories[0].readTimeSeconds).toBeGreaterThanOrEqual(30);
   });
 
-  test('under-8 gets 3 young stories with 1 new word; 13+ gets up to 18 teen stories with 3 words', async () => {
+  test('under-8 gets 5 young stories with 1 new word; 13+ gets 7 teen stories with 3 words', async () => {
     seedStories(20);
     const young = await request(app).get('/current-affairs/digest/today?ageGroup=under-8');
-    expect(young.body.target).toBe(3);
-    expect(young.body.stories).toHaveLength(3);
+    expect(young.body.target).toBe(5);
+    expect(young.body.stories).toHaveLength(5);
     expect(young.body.stories[0].title).toMatch(/^Young title/);
     expect(young.body.stories[0].newWords).toHaveLength(1);
 
@@ -50,7 +50,7 @@ describe('GET /current-affairs/digest/today', () => {
     const teen = await request(app).get('/current-affairs/digest/today?ageGroup=13+');
     expect(teen.status).toBe(200);
     expect(teen.body.ageGroup).toBe('13+');
-    expect(teen.body.stories).toHaveLength(18);
+    expect(teen.body.stories).toHaveLength(7);
     expect(teen.body.stories[0].title).toMatch(/^Teen title/);
     expect(teen.body.stories[0].newWords).toHaveLength(3);
   });

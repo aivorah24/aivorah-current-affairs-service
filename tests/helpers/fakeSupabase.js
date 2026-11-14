@@ -36,6 +36,7 @@ function createFakeSupabase() {
     gte(col, val) { this.filters.push((r) => r[col] !== null && r[col] !== undefined && r[col] >= val); return this; }
     order(col, { ascending = true } = {}) { this.orders.push({ col, ascending }); return this; }
     limit(n) { this.max = n; return this; }
+    range(from, to) { this.offset = from; this.max = to - from + 1; return this; }
     maybeSingle() { this.single = true; return this; }
     upsert(row, options = {}) { this.mode = 'upsert'; this.payload = row; this.options = options; return this; }
     insert(row) { this.mode = 'upsert'; this.payload = row; this.options = {}; return this; }
@@ -79,6 +80,7 @@ function createFakeSupabase() {
           return (a[col] > b[col] ? 1 : -1) * (ascending ? 1 : -1);
         });
       }
+      if (this.offset) out = out.slice(this.offset);
       if (this.max !== null) out = out.slice(0, this.max);
       if (this.single) return { data: out[0] || null, error: null };
       return { data: out, error: null };
