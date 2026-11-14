@@ -2,6 +2,19 @@
 
 ## 1. Create the tables
 
+The tables are migration `0023_current_affairs.sql` in **aivorah-db**:
+
+```bash
+cd ../aivorah-db && npm run migrate:dev   # and migrate:test
+```
+
+It is safe on a database that already has the tables (made from this file by
+hand): it only adds what is missing. Apply it **before** deploying this service:
+the pipeline and the admin tool write the `reviewed_by`, `reviewed_at` and quiz
+`review_notes` columns it adds.
+
+For a quick sandbox with demo rows you can instead use `schema.sql`:
+
 1. Open the Supabase project → **SQL Editor** → **New query**.
 2. Paste the whole of `schema.sql` and click **Run**. It is safe to run again later:
    tables, indexes and seed rows are only created when missing; the function and
@@ -77,7 +90,7 @@ token: `-H "Authorization: Bearer <token>"`. The app sends it automatically.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/current-affairs/digest/today?ageGroup&studentEmail&date` | 3 / 10 / 18 stories; latest digest if none today |
+| GET | `/current-affairs/digest/today?ageGroup&studentEmail&date` | 5 / 6 / 7 stories; latest digest if none today |
 | GET | `/current-affairs/digest/list?limit=30` | past digest dates + story counts |
 | GET | `/current-affairs/story/:id?ageGroup` | one published story |
 | GET | `/current-affairs/quiz/week?ageGroup&studentEmail&weekStart` | 10 questions, no answers; the student's attempt if taken |
@@ -90,7 +103,49 @@ token: `-H "Authorization: Bearer <token>"`. The app sends it automatically.
 
 ## 5. Content pipeline and review
 
-Nothing the pipeline writes is shown to students until an editor publishes it.
+### The schedule
+
+Two GitHub Actions workflows run the pipeline (`.github/workflows/`):
+
+| Workflow | When (India time) | What |
+|---|---|---|
+| Daily digest | every day 05:30 | collects today's news, writes the 3 age versions, publishes or holds each story |
+| Weekly quiz | Sunday 06:15 | writes 10 questions per age group from last week's published stories |
+
+They need three repository secrets (GitHub → the repo → **Settings → Secrets
+and variables → Actions → New repository secret**): `SUPABASE_URL`,
+`SUPABASE_KEY` (the service_role key) and `GROQ_API_KEY`. Each run keeps its
+log as a downloadable artifact, and GitHub emails the repo owner when a run
+fails. Both can also be run by hand from the **Actions** tab (with a dry-run
+option).
+
+### What is published automatically
+
+With `CA_AUTO_PUBLISH=on` (the default; `scripts/lib/autoPublish.js`):
+
+- a **story** is published when the fact check found nothing: no numbers or
+  names missing from the source, and the source had enough text to check.
+  Its "did you know" comes from outside the source, so it is removed and kept
+  in `review_notes` for an editor to check and add back. Word-count and
+  new-word notes do not hold a story back.
+- a **quiz** (one age group's 10 questions) is published unless a question
+  cites a story from outside that week.
+- everything else is saved with status `review` and waits in the admin
+  content tool. With `CA_AUTO_PUBLISH=off` everything waits.
+
+### The admin content tool
+
+Aivorah admin portal → **Current Affairs** (`/current-affairs/admin/*`, for the
+admin portal's admins plus `CA_EDITOR_EMAILS`):
+
+- **Stories**: the review queue with the check notes and source link; edit any
+  age version; publish (marks it fact-checked), reject, or write a new story.
+- **Quiz**: pick a week and age group, edit questions, options and answers,
+  add questions, publish the week.
+- **Insights**: digest completion, reading time, quiz participation and
+  accuracy, 30-day retention, daily readers, streaks — for a date range.
+
+### By hand (still works)
 
 ```bash
 npm run generate:digest -- --dry-run     # fetch + write, save nothing (see logs/)

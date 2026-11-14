@@ -1,0 +1,180 @@
+// Admin content tool: only editors get in; stories and quiz questions can be
+// reviewed, edited, written and published; analytics come from the activity tables.
+jest.mock('../services/supabase', () => require('./helpers/fakeSupabase').createFakeSupabase());
+jest.mock('../services/firebaseAdmin', () => require('./helpers/fakeFirebase'));
+
+const request = require('supertest');
+const app = require('../index');
+const supabase = require('../services/supabase');
+const { freezeTime, storyRow, questionRow, weekQuestions, auth } = require('./helpers/fixtures');
+
+const EDITOR = 'admin@aivorah.ai';
+const get = (path, email = EDITOR) => request(app).get(`/current-affairs/admin${path}`).set(auth(email));
+const send = (method, path, body, email = EDITOR) => request(app)[method](`/current-affairs/admin${path}`).set(auth(email)).send(body);
+
+beforeEach(() => {
+  supabase.__reset();
+  freezeTime('2026-11-09T06:00:00Z'); // Monday 9 Nov, India time
+});
+afterEach(() => { jest.useRealTimers(); delete process.env.CA_EDITOR_EMAILS; });
+
+describe('who can use it', () => {
+  test('no sign-in is 401; a student is 403; an editor (or an extra editor from settings) gets in', async () => {
+    expect((await request(app).get('/current-affairs/admin/me')).status).toBe(401);
+    expect((await get('/me', 'kid@school.in')).status).toBe(403);
+    expect((await get('/me')).body).toEqual({ email: EDITOR, editor: true });
+    process.env.CA_EDITOR_EMAILS = 'writer@aivorah.ai, other@aivorah.ai';
+    expect((await get('/me', 'Writer@Aivorah.ai')).status).toBe(200);
+  });
+});
+
+describe('stories', () => {
+  test('the review queue lists stories waiting for an editor with their check notes', async () => {
+    supabase.__seed('ca_stories', [
+      storyRow({ n: 1, status: 'review', review_notes: 'names not in source: Meghdoot' }),
+      storyRow({ n: 2, status: 'published' }),
+    ]);
+    const res = await get('/stories?status=review');
+    expect(res.status).toBe(200);
+    expect(res.body.stories).toHaveLength(1);
+    expect(res.body.stories[0]).toMatchObject({ title_kid: 'Kid title 1', review_notes: 'names not in source: Meghdoot' });
+  });
+
+  test('an editor fixes the text, then publishes; the story shows in the digest', async () => {
+    const [row] = [storyRow({ n: 1, status: 'review', is_true_fact: false })];
+    supabase.__seed('ca_stories', [row]);
+
+    const edited = await send('patch', `/stories/${row.id}`, { title_kid: 'Fixed title', did_you_know: 'Checked fact.' });
+    expect(edited.status).toBe(200);
+    expect(edited.body.story).toMatchObject({ title_kid: 'Fixed title', did_you_know: 'Checked fact.' });
+    expect((await send('patch', `/stories/${row.id}`, { title_kid: '  ' })).status).toBe(400);
+
+    const before = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    expect(before.body.stories || []).toHaveLength(0);
+
+    const pub = await send('post', `/stories/${row.id}/status`, { status: 'published' });
+    expect(pub.body.story).toMatchObject({ status: 'published', is_true_fact: true, reviewed_by: EDITOR });
+
+    const after = await request(app).get('/current-affairs/digest/today?ageGroup=8-12');
+    expect(after.body.stories.map((s) => s.title)).toEqual(['Fixed title']);
+  });
+
+  test('a story can be rejected; an unknown status or story is refused', async () => {
+    const row = storyRow({ status: 'review' });
+    supabase.__seed('ca_stories', [row]);
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'rejected' })).body.story.status).toBe('rejected');
+    expect((await send('post', `/stories/${row.id}/status`, { status: 'live' })).status).toBe(400);
+    expect((await send('post', '/stories/00000000-0000-4000-8000-000000000000/status', { status: 'published' })).status).toBe(404);
+  });
+
+  test('an editor writes a new story: all three age versions are required', async () => {
+    const full = { category: 'science', source: 'NASA', source_url: 'https://www.nasa.gov/x' };
+    for (const f of ['title', 'summary', 'what_happened', 'why_important']) for (const a of ['young', 'kid', 'teen']) full[`${f}_${a}`] = `${f} ${a}`;
+
+    const missing = await send('post', '/stories', { ...full, why_important_teen: undefined });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toMatch(/why_important_teen/);
+
+    const draft = await send('post', '/stories', full);
+    expect(draft.status).toBe(201);
+    expect(draft.body.story).toMatchObject({ status: 'draft', publish_date: '2026-11-09', category: 'science' });
+
+    const live = await send('post', '/stories', { ...full, publish: true });
+    expect(live.body.story).toMatchObject({ status: 'published', reviewed_by: EDITOR, is_true_fact: true });
+  });
+});
+
+describe('quiz', () => {
+  test("lists this week's questions with answers, in order", async () => {
+    supabase.__seed('ca_quiz_questions', weekQuestions({ status: 'review' }));
+    const res = await get('/quiz?ageGroup=8-12');
+    expect(res.status).toBe(200);
+    expect(res.body.weekStart).toBe('2026-11-08');
+    expect(res.body.questions.map((q) => q.question)).toEqual(['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10']);
+    expect(res.body.questions[0]).toHaveProperty('correct_index', 1);
+    expect((await get('/quiz?ageGroup=8-12&weekStart=2026-11-09')).status).toBe(400); // not a Sunday
+  });
+
+  test('editing keeps the answer pointing at an option', async () => {
+    const q = questionRow({ status: 'review' });
+    supabase.__seed('ca_quiz_questions', [q]);
+    expect((await send('patch', `/quiz/${q.id}`, { correct_index: 7 })).status).toBe(400);
+    expect((await send('patch', `/quiz/${q.id}`, { options: ['Yes', 'No'] })).status).toBe(200); // answer 1 still valid
+    expect((await send('patch', `/quiz/${q.id}`, { options: ['Only one'] })).status).toBe(400);
+    const ok = await send('patch', `/quiz/${q.id}`, { question: 'Better question?', correct_index: 0, explanation: 'Clearer.' });
+    expect(ok.body.question).toMatchObject({ question: 'Better question?', correct_index: 0, explanation: 'Clearer.' });
+  });
+
+  test('publishing a week makes the quiz playable; rejected questions stay out', async () => {
+    const qs = weekQuestions({ status: 'review' });
+    qs[9].status = 'rejected';
+    supabase.__seed('ca_quiz_questions', qs);
+    const before = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    expect(before.body.questions || []).toHaveLength(0);
+
+    const pub = await send('post', '/quiz/publish', { weekStart: '2026-11-08', ageGroup: '8-12' });
+    expect(pub.body).toEqual({ published: 9 });
+    const after = await request(app).get('/current-affairs/quiz/week?ageGroup=8-12');
+    expect(after.body.questions).toHaveLength(9);
+    expect(after.body.questions[0]).not.toHaveProperty('correct_index');
+  });
+
+  test('an editor can add a question and see the week in the list', async () => {
+    const res = await send('post', '/quiz', {
+      week_start: '2026-11-08', age_group: '13+', category: 'world', question_type: 'true_false',
+      question: 'The Pacific is the largest ocean.', options: ['True', 'False'], correct_index: 0, explanation: 'It is.',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.question).toMatchObject({ status: 'review', age_group: '13+' });
+    const weeks = await get('/quiz/weeks');
+    expect(weeks.body.weeks).toEqual([{ weekStart: '2026-11-08', ageGroup: '13+', counts: { review: 1 } }]);
+  });
+});
+
+describe('analytics', () => {
+  test('computes the metrics from reads, finished digests and quiz attempts', async () => {
+    const s1 = storyRow({ n: 1 });
+    supabase.__seed('ca_stories', [s1]);
+    supabase.__seed('ca_story_reads', [
+      // a: reads on 2 days, finishes the digest on 1; b: reads on 1 day
+      { student_email: 'a@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-11-08', duration_seconds: 60 },
+      { student_email: 'a@x.in', story_id: 's2', age_group: '8-12', read_date: '2026-11-08', duration_seconds: 120 },
+      { student_email: 'a@x.in', story_id: 's3', age_group: '8-12', read_date: '2026-11-09', duration_seconds: null },
+      { student_email: 'b@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-11-09', duration_seconds: 90 },
+      // c only in the earlier month: counts for retention, not for this range
+      { student_email: 'c@x.in', story_id: s1.id, age_group: '8-12', read_date: '2026-09-20', duration_seconds: 30 },
+      { student_email: 'a@x.in', story_id: 's4', age_group: '8-12', read_date: '2026-09-25', duration_seconds: 30 },
+    ]);
+    supabase.__seed('ca_digest_views', [{ student_email: 'a@x.in', age_group: '8-12', view_date: '2026-11-08', story_count: 2 }]);
+    supabase.__seed('ca_quiz_attempts', [{ student_email: 'a@x.in', age_group: '8-12', week_start: '2026-11-08', percentage: 80 }]);
+    supabase.__seed('ca_progress', [
+      { student_email: 'a@x.in', age_group: '8-12', current_streak: 2, updated_at: '2026-11-09T05:00:00Z' },
+      { student_email: 'b@x.in', age_group: '8-12', current_streak: 1, updated_at: '2026-11-09T05:00:00Z' },
+    ]);
+
+    const res = await get('/analytics?from=2026-11-08&to=2026-11-09');
+    expect(res.status).toBe(200);
+    expect(res.body.activeStudents).toBe(2);
+    const m = res.body.metrics;
+    expect(m.digestCompletionRate).toMatchObject({ value: 33.3, completed: 1, readingDays: 3 });
+    expect(m.avgReadingSeconds.value).toBe(90);            // (60 + 120 + 90) / 3 timed reads
+    expect(m.avgMinutesPerDay.value).toBe(2.3);            // a: 3 min on the 8th; b: 1.5 min on the 9th
+    expect(m.quizParticipation).toMatchObject({ value: 50, players: 1 });
+    expect(m.quizAccuracy.value).toBe(80);
+    expect(m.retention30).toMatchObject({ value: 50, previous: 2, retained: 1 }); // a came back, c did not
+    expect(m.dailyActiveReaders.value).toBe(1.5);          // 1 on the 8th, 2 on the 9th
+    expect(m.avgStreak.value).toBe(1.5);
+    expect(res.body.daily).toEqual([
+      { date: '2026-11-08', readers: 1, storiesRead: 2, digestsCompleted: 1 },
+      { date: '2026-11-09', readers: 2, storiesRead: 2, digestsCompleted: 0 },
+    ]);
+  });
+
+  test('defaults to the last 30 days; rejects bad ranges', async () => {
+    const res = await get('/analytics');
+    expect(res.body.range).toMatchObject({ from: '2026-10-11', to: '2026-11-09', days: 30, ageGroup: 'all' });
+    expect(res.body.metrics.digestCompletionRate.value).toBeNull(); // no data yet: no made-up zeros
+    expect((await get('/analytics?from=2026-11-09&to=2026-11-01')).status).toBe(400);
+    expect((await get('/analytics?from=2025-01-01&to=2026-11-09')).status).toBe(400);
+  });
+});
