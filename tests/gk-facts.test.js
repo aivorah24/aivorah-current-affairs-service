@@ -78,6 +78,40 @@ describe('GET /current-affairs/gk/quiz', () => {
   });
 });
 
+describe('data/gk-events.json', () => {
+  const events = gk.loadEvents();
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const text = (e) => [e.event_name, e.description, e.why_special, e.how_celebrated, e.story, e.quote, ...e.facts].join(' ');
+
+  test('every event has a name, a valid date and a description', () => {
+    expect(events.length).toBeGreaterThan(350);
+    for (const e of events) {
+      expect(e.event_name).toBeTruthy();
+      expect(e.description).toBeTruthy();
+      expect(e.date).toBe(`${String(MONTHS.indexOf(e.month) + 1).padStart(2, '0')}-${String(e.day).padStart(2, '0')}`);
+      expect(Array.isArray(e.facts)).toBe(true);
+    }
+  });
+
+  test('no text from other days, PDF leftovers or "Same as" stubs', () => {
+    const otherDay = new RegExp(`(${MONTHS.join('|')}) \\d{1,2} —`);
+    const bad = events.filter((e) => /[•�\uD800-\uDFFF]|[\u{1F000}-\u{1FFFF}]/u.test(text(e))
+      || /^Same as\b/.test(e.description)
+      || otherDay.test(text(e)));
+    expect(bad.map((e) => `${e.date} ${e.event_name}`)).toEqual([]);
+  });
+
+  test('no event appears twice on the same date', () => {
+    const keys = events.map((e) => `${e.date}|${e.event_name}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test('a date with several events keeps them apart (26 Jan)', () => {
+    const names = gk.getEventsForDate('01-26').map((e) => e.event_name);
+    expect(names).toEqual(expect.arrayContaining(['Republic Day', 'International Day of Clean Energy']));
+  });
+});
+
 describe('other GK endpoints', () => {
   test('search finds matching events', async () => {
     const res = await get('/search?q=republic%20constitution');
