@@ -11,9 +11,8 @@ const router = express.Router();
 // ── GET /current-affairs/gk/today ───────────────────────────────────────────
 // Events for today (Asia/Kolkata).
 router.get('/today', handle(async (_req, res) => {
-  const today = localDate();
-  const [mm, dd] = today.split('-');
-  const events = gk.getEventsForDate(`${mm}-${dd}`);
+  const today = localDate(); // YYYY-MM-DD; getEventsForDate accepts it as-is
+  const events = gk.getEventsForDate(today);
   res.json({
     date: today,
     events,

@@ -269,7 +269,7 @@ function generateQuestionForEvent(event, allEvents) {
   } else if (type === 'why' && whySpecial) {
     correct = summarize(whySpecial, 120);
     question = pick(QUESTION_TEMPLATES.why).replace('{event}', eventName);
-    distractors = getDistractors(allEvents, eventName, correct);
+    distractors = getDistractors(allEvents, eventName, correct, 'why_special');
   } else if (type === 'fact' && facts && facts.length > 0) {
     correct = summarize(facts[0], 120);
     question = pick(QUESTION_TEMPLATES.fact).replace('{event}', eventName);
@@ -277,7 +277,7 @@ function generateQuestionForEvent(event, allEvents) {
   } else if (type === 'how' && howCelebrated) {
     correct = summarize(howCelebrated, 120);
     question = pick(QUESTION_TEMPLATES.how).replace('{event}', eventName);
-    distractors = getDistractors(allEvents, eventName, correct);
+    distractors = getDistractors(allEvents, eventName, correct, 'how_celebrated');
   } else if (description) {
     correct = summarize(description, 120);
     question = pick(QUESTION_TEMPLATES.what_is).replace('{event}', eventName);
@@ -322,33 +322,33 @@ function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function getDistractors(allEvents, eventName, exclude, max = 3) {
-  const distractors = [];
+// Wrong options are drawn at random from OTHER events, using the same field as
+// the correct answer (a "how is it celebrated" question gets other events'
+// celebrations, not their descriptions), so the right answer doesn't stand out
+// by style and every quiz doesn't reuse the first few events in the file.
+function pickDistractors(allEvents, eventName, correct, textOf, max = 3) {
+  const prefix = correct.slice(0, 30);
+  const pool = [];
+  const seen = new Set([correct]);
   for (const e of allEvents) {
     if (e.event_name === eventName) continue;
-    const desc = e.description || '';
-    if (desc && !desc.startsWith(exclude.slice(0, 30))) {
-      distractors.push(summarize(desc, 120));
-    }
-    if (distractors.length >= max) break;
+    const s = summarize(textOf(e) || '', 120);
+    if (!s || seen.has(s) || s.startsWith(prefix)) continue;
+    seen.add(s);
+    pool.push(s);
   }
-  return distractors;
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, max);
 }
 
-function getFactDistractors(allEvents, eventName, exclude, max = 3) {
-  const distractors = [];
-  for (const e of allEvents) {
-    if (e.event_name === eventName) continue;
-    for (const f of (e.facts || [])) {
-      if (!f.startsWith(exclude.slice(0, 30))) {
-        distractors.push(summarize(f, 120));
-      }
-      if (distractors.length >= max) break;
-    }
-    if (distractors.length >= max) break;
-  }
-  return distractors;
-}
+const getDistractors = (allEvents, eventName, correct, field = 'description') =>
+  pickDistractors(allEvents, eventName, correct, (e) => e[field]);
+
+const getFactDistractors = (allEvents, eventName, correct) =>
+  pickDistractors(allEvents, eventName, correct, (e) => (e.facts || [])[0]);
 
 module.exports = {
   loadEvents,
